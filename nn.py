@@ -28,26 +28,31 @@ nlp = spacy.load('en_core_web_lg')
 
 
 
-def preprocessing(train, dev):
+def preprocessing(train, test, dev):
     print("Preprocessing ....")
 
     train = train.str.replace("#", "")
+    test = test.str.replace("#", "")
     dev = dev.str.replace("#", "")
 
     train = train.map(lambda x: em.decode(x))
+    test = test.map(lambda x: em.decode(x))
     dev = dev.map(lambda x: em.decode(x))
 
     train = train.str.lower()
+    test = test.str.lower()
     dev = dev.str.lower()
     
     train = train.map(lambda x: " ".join(token.lemma_ for token in nlp(x) if token.lemma_ != "-PRON-"))
+    test = test.map(lambda x: " ".join(token.lemma_ for token in nlp(x) if token.lemma_ != "-PRON-"))
     dev = dev.map(lambda x: " ".join(token.lemma_ for token in nlp(x) if token.lemma_ != "-PRON-"))
      
     train = train.map(lambda x: " ".join("someone" if "@" in word else word for word in x.split(" ")))
+    test = test.map(lambda x: " ".join("someone" if "@" in word else word for word in x.split(" ")))
     dev = dev.map(lambda x: " ".join("someone" if "@" in word else word for word in x.split(" ")))
  
     #print(train)
-    return (train, dev)
+    return (train, test, dev)
 
 def pre_trained_glove():
     # load the whole embedding into memory
@@ -82,6 +87,7 @@ def build_RNN_model(vocab_size, n_outputs, embedding_matrix, max_length):
     return (model, {"callbacks":cal}) 
 
 def train_and_predict(train_data: pd.DataFrame,
+                      test_data: pd.DataFrame
                       dev_data: pd.DataFrame) -> pd.DataFrame:
     
     # divide train to data and label
@@ -89,11 +95,14 @@ def train_and_predict(train_data: pd.DataFrame,
     train_out = np.array(train_data[emotions], dtype=np.int32)
     n_outputs = len(emotions)
 
-    test_in = dev_data["Tweet"]
-    test_out = np.array(dev_data[emotions], dtype=np.int32)
+    test_in = test_data["Tweet"]
+    #test_out = np.array(test_data[emotions], dtype=np.int32)
+
+    dev_in = dev_data["Tweet"]
+    dev_out = np.array(dev_data[emotions], dtype=np.int32)
     
     # data preprocessing
-    tweet, test_in = preprocessing(tweet, test_in)
+    tweet, test_in, dev_in = preprocessing(tweet, test_in, dev_in)
 
     # prepare tokenizer
     t = Tokenizer()
@@ -108,6 +117,10 @@ def train_and_predict(train_data: pd.DataFrame,
     max_length = MAX_SEQUENCE_LENGTH
     # pad sequence to a max length of tweet
     padded_docs = pad_sequences(seq, maxlen=max_length, padding='post')
+
+    dev_in = t.texts_to_sequences(dev_in)
+    dev_seq = pad_sequences(dev_in, maxlen=max_length, padding='post')
+
 
     test_in = t.texts_to_sequences(test_in)
     test_seq = pad_sequences(test_in, maxlen=max_length, padding='post')
@@ -125,7 +138,7 @@ def train_and_predict(train_data: pd.DataFrame,
     model, kwargs = build_RNN_model(vocab_size, n_outputs, embedding_matrix, max_length)
 
     # training
-    kwargs.update(x=padded_docs, y=train_out, batch_size=128, validation_data=(test_seq, test_out),
+    kwargs.update(x=padded_docs, y=train_out, batch_size=128, validation_data=(dev_seq, dev_out),
                 epochs=10)
     model.fit(**kwargs)
     
@@ -148,16 +161,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("train", nargs='?', default="2018-E-c-En-train.txt")
     parser.add_argument("test", nargs='?', default="2018-E-c-En-test.txt")
+    parser.add_argument("dev", nargs='?', default="2018-E-c-En-dev.txt")
     args = parser.parse_args()
 
     # reads train and dev data into Pandas data frames
     read_csv_kwargs = dict(sep="\t",
                            converters={e: emotion_to_int.get for e in emotions})
     train_data = pd.read_csv(args.train, **read_csv_kwargs)
+    dev_data = pd.read_csv(args.dev, **read_csv_kwargs)
     test_data = pd.read_csv(args.test, **read_csv_kwargs)
 
     # makes predictions on the dev set
-    test_predictions = train_and_predict(train_data, test_data)
+    test_predictions = train_and_predict(train_data, test_data, dev_data)
 
     # saves predictions and creates submission zip file
     test_predictions.to_csv("E-C_en_pred.txt", sep="\t", index=False)
